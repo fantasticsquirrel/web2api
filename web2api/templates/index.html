@@ -483,6 +483,7 @@
         display: flex;
         flex-wrap: wrap;
         gap: 0.34rem;
+        align-items: center;
       }
 
       .manager-btn {
@@ -1124,7 +1125,7 @@
               }
               actions.append(
                 actionButton({
-                  label: managedValue ? "Uninstall" : "Uninstall (force)",
+                  label: managedValue ? "Uninstall" : "Remove",
                   danger: true,
                   onClick: () =>
                     runAction({
