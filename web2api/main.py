@@ -30,6 +30,7 @@ from web2api.logging_utils import (
 from web2api.plugin import build_plugin_payload
 from web2api.pool import BrowserPool
 from web2api.mcp_bridge import register_mcp_routes
+from web2api.mcp_server import mount_mcp_server
 from web2api.recipe_admin_api import register_recipe_admin_routes
 from web2api.recipe_manager import (
     default_catalog_path,
@@ -379,6 +380,7 @@ def create_app(
 
     register_recipe_admin_routes(app, app_version=APP_VERSION)
     register_mcp_routes(app)
+    mount_mcp_server(app)
 
     @app.get("/health")
     async def health(request: Request) -> JSONResponse:
