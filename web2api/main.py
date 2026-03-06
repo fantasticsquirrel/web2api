@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 
 from web2api import __version__
 from web2api.cache import CacheKey, ResponseCache
+from web2api.config import is_valid_param_name
 from web2api.engine import scrape
 from web2api.logging_utils import (
     REQUEST_ID_HEADER,
@@ -27,10 +27,10 @@ from web2api.logging_utils import (
     reset_request_id,
     set_request_id,
 )
-from web2api.plugin import build_plugin_payload
-from web2api.pool import BrowserPool
 from web2api.mcp_bridge import register_mcp_routes
 from web2api.mcp_server import mount_mcp_server
+from web2api.plugin import build_plugin_payload
+from web2api.pool import BrowserPool
 from web2api.recipe_admin_api import register_recipe_admin_routes
 from web2api.recipe_manager import (
     default_catalog_path,
@@ -50,7 +50,6 @@ from web2api.schemas import (
 
 TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
 logger = logging.getLogger(__name__)
-_EXTRA_PARAM_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _MAX_EXTRA_PARAM_VALUE_LENGTH = 512
 APP_VERSION = __version__
 
@@ -151,15 +150,17 @@ def _build_error_response(
     )
 
 
-def _collect_extra_params(request: Request) -> tuple[dict[str, str] | None, str | None]:
+def _collect_extra_params(
+    query_params: Mapping[str, str],
+) -> tuple[dict[str, str] | None, str | None]:
     extras: dict[str, str] = {}
-    for key, value in request.query_params.items():
+    for key, value in query_params.items():
         if key in {"page", "q"}:
             continue
-        if not _EXTRA_PARAM_PATTERN.match(key):
+        if not is_valid_param_name(key):
             return None, (
-                f"invalid query parameter '{key}': names must match "
-                "[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
+                f"invalid query parameter '{key}': name must be a valid Python "
+                "identifier and not a keyword"
             )
         if len(value) > _MAX_EXTRA_PARAM_VALUE_LENGTH:
             return None, (
@@ -168,6 +169,15 @@ def _collect_extra_params(request: Request) -> tuple[dict[str, str] | None, str 
             )
         extras[key] = value
     return extras or None, None
+
+
+def _sanitize_upload_filename(raw_filename: str, *, fallback_index: int) -> str:
+    """Return a safe filename stripped of any path components."""
+    normalized = raw_filename.replace("\\", "/")
+    candidate = Path(normalized).name.strip()
+    if not candidate or candidate in {".", ".."}:
+        return f"upload_{fallback_index}"
+    return candidate
 
 
 def _cache_key_for_request(
@@ -200,16 +210,40 @@ async def _serve_recipe_endpoint(
     page: int,
     q: str | None,
 ) -> JSONResponse:
-    """Serve a recipe endpoint request with cache support."""
-    extra_params, extra_error = _collect_extra_params(request)
-    # Attach uploaded file paths if present (from POST multipart)
-    file_paths = getattr(getattr(request, "state", None), "file_paths", None)
+    """Serve a recipe endpoint request with shared execution logic."""
+    response = await execute_recipe_endpoint(
+        app=request.app,
+        recipe=recipe,
+        endpoint_name=endpoint_name,
+        page=page,
+        q=q,
+        query_params=request.query_params,
+        file_paths=getattr(getattr(request, "state", None), "file_paths", None),
+    )
+    return JSONResponse(
+        content=response.model_dump(mode="json"),
+        status_code=_status_code_for_error(response.error),
+    )
+
+
+async def execute_recipe_endpoint(
+    *,
+    app: FastAPI,
+    recipe: Recipe,
+    endpoint_name: str,
+    page: int,
+    q: str | None,
+    query_params: Mapping[str, str],
+    file_paths: list[str] | None = None,
+) -> ApiResponse:
+    """Execute a recipe endpoint request and return the normalized response."""
+    extra_params, extra_error = _collect_extra_params(query_params)
     if file_paths:
         if extra_params is None:
             extra_params = {}
         extra_params["file_paths"] = file_paths  # type: ignore[assignment]
     if extra_error is not None:
-        response = _build_error_response(
+        return _build_error_response(
             recipe=recipe,
             endpoint=endpoint_name,
             current_page=page,
@@ -217,25 +251,23 @@ async def _serve_recipe_endpoint(
             code="INVALID_PARAMS",
             message=extra_error,
         )
-        return JSONResponse(
-            content=response.model_dump(mode="json"),
-            status_code=_status_code_for_error(response.error),
-        )
+
+    scrape_func = getattr(app.state, "scrape_func", scrape)
 
     async def _run_scrape() -> ApiResponse:
-        return await scrape(
-            pool=request.app.state.pool,
+        return await scrape_func(
+            pool=app.state.pool,
             recipe=recipe,
             endpoint=endpoint_name,
             page=page,
             query=q,
             extra_params=extra_params,
-            scrape_timeout=request.app.state.scrape_timeout,
+            scrape_timeout=app.state.scrape_timeout,
         )
 
-    response_cache: ResponseCache | None = getattr(request.app.state, "response_cache", None)
+    response_cache: ResponseCache | None = getattr(app.state, "response_cache", None)
     cache_key: CacheKey | None = None
-    # Skip cache for file upload requests
+    # Skip cache for file upload requests.
     if file_paths:
         response_cache = None
     if response_cache is not None:
@@ -250,19 +282,12 @@ async def _serve_recipe_endpoint(
         if cache_lookup.response is not None:
             if cache_lookup.state == "stale":
                 await response_cache.trigger_refresh(cache_key, _run_scrape)
-            cached_response = _with_cached_metadata(cache_lookup.response)
-            return JSONResponse(
-                content=cached_response.model_dump(mode="json"),
-                status_code=_status_code_for_error(cached_response.error),
-            )
+            return _with_cached_metadata(cache_lookup.response)
 
     response = await _run_scrape()
     if response_cache is not None and cache_key is not None:
         await response_cache.set(cache_key, response)
-    return JSONResponse(
-        content=response.model_dump(mode="json"),
-        status_code=_status_code_for_error(response.error),
-    )
+    return response
 
 
 def create_app(
@@ -326,6 +351,7 @@ def create_app(
         app.state.catalog_ref = catalog_ref_value
         app.state.catalog_path = catalog_path_value
         app.state.recipe_admin_lock = asyncio.Lock()
+        app.state.scrape_func = scrape
         try:
             yield
         finally:
@@ -479,13 +505,20 @@ def create_app(
         try:
             if files:
                 temp_dir = tempfile.mkdtemp(prefix="web2api_upload_")
-                for upload in files:
+                temp_dir_path = Path(temp_dir).resolve()
+                for index, upload in enumerate(files):
                     if upload.filename:
-                        dest = os.path.join(temp_dir, upload.filename)
+                        safe_name = _sanitize_upload_filename(
+                            upload.filename,
+                            fallback_index=index,
+                        )
+                        dest = (temp_dir_path / safe_name).resolve()
+                        if temp_dir_path not in dest.parents and dest != temp_dir_path:
+                            raise HTTPException(status_code=400, detail="invalid upload filename")
                         content = await upload.read()
-                        with open(dest, "wb") as f:
+                        with dest.open("wb") as f:
                             f.write(content)
-                        saved_paths.append(dest)
+                        saved_paths.append(str(dest))
 
             # Inject file_paths into the request query string so
             # _collect_extra_params won't see it but the scraper will.

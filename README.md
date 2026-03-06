@@ -348,7 +348,7 @@ All recipe endpoints follow the pattern: `GET /{slug}/{endpoint}?page=1&q=...`
 - `page` — pagination (default: 1)
 - `q` — query text (required when `requires_query: true`)
 - additional query params are passed to custom scrapers
-- extra query param names must match `[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}` and values are capped at 512 chars
+- extra query param names must be valid Python identifiers (and not keywords); values are capped at 512 chars
 
 ### Error Codes
 

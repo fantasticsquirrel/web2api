@@ -10,14 +10,13 @@ Endpoints:
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from web2api.mcp_utils import TOOL_NAME_SEP, build_tool_name, parse_tool_name
+from web2api.mcp_utils import build_tool_name, parse_tool_name
 from web2api.registry import RecipeRegistry
 
 logger = logging.getLogger(__name__)
@@ -186,6 +185,8 @@ def register_mcp_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
 
         recipe = registry.get(slug)
+        if recipe is None:
+            raise HTTPException(status_code=404, detail=f"Recipe not found for tool: {tool_name}")
 
         try:
             body = await request.json()
@@ -197,29 +198,25 @@ def register_mcp_routes(app: FastAPI) -> None:
 
         query = body.pop("q", None) or body.pop("query", None)
 
-        from web2api.main import _serve_recipe_endpoint
+        from web2api.main import execute_recipe_endpoint
 
-        params = {}
+        params: dict[str, str] = {"page": "1"}
         if query:
             params["q"] = str(query)
-        params["page"] = "1"
         for k, v in body.items():
             params[k] = str(v)
 
-        scope = dict(request.scope)
-        scope["query_string"] = "&".join(f"{k}={v}" for k, v in params.items()).encode()
-        inner_request = Request(scope, request.receive)
-
         try:
-            response = await _serve_recipe_endpoint(
-                inner_request,
+            response = await execute_recipe_endpoint(
+                app=request.app,
                 recipe=recipe,
                 endpoint_name=endpoint_name,
                 page=1,
-                q=query,
+                q=str(query) if query is not None else None,
+                query_params=params,
             )
 
-            response_data = json.loads(response.body.decode())
+            response_data = response.model_dump(mode="json")
             items = response_data.get("items", [])
             error = response_data.get("error")
 

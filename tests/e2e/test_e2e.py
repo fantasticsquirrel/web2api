@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import time
 import uuid
@@ -17,7 +18,6 @@ from web2api.schemas import ApiResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
-BASE_URL = "http://127.0.0.1:8010"
 HEALTH_TIMEOUT_SECONDS = 180
 HEALTH_POLL_INTERVAL_SECONDS = 2.0
 LIVE_ERROR_MARKERS = (
@@ -60,6 +60,12 @@ def _docker_compose_base_cmd() -> list[str]:
 def _is_docker_unavailable(stderr_stdout: str) -> bool:
     message = stderr_stdout.lower()
     return any(marker in message for marker in DOCKER_UNAVAILABLE_MARKERS)
+
+
+def _allocate_host_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 def _wait_for_health(base_url: str) -> None:
@@ -129,6 +135,9 @@ def dockerized_web2api() -> Iterator[str]:
     compose_project = f"web2api-e2e-{uuid.uuid4().hex[:8]}"
     env = os.environ.copy()
     env["COMPOSE_PROJECT_NAME"] = compose_project
+    host_port = _allocate_host_port()
+    env["WEB2API_HOST_PORT"] = str(host_port)
+    base_url = f"http://127.0.0.1:{host_port}"
 
     started = False
     try:
@@ -140,8 +149,8 @@ def dockerized_web2api() -> Iterator[str]:
             pytest.fail(f"docker compose up failed:\n{combined}")
 
         started = True
-        _wait_for_health(BASE_URL)
-        yield BASE_URL
+        _wait_for_health(base_url)
+        yield base_url
     finally:
         if started:
             _run_compose(

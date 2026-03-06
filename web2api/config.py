@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import keyword
 import re
 from collections.abc import Mapping
 from typing import Literal
@@ -12,7 +13,6 @@ ActionType = Literal["wait", "click", "scroll", "type", "sleep", "evaluate"]
 PaginationType = Literal["page_param", "next_link", "offset_param"]
 FieldContext = Literal["self", "next_sibling", "parent"]
 RESERVED_RECIPE_SLUGS = {"api", "health", "docs", "openapi", "redoc"}
-_PARAM_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 _RESERVED_PARAM_NAMES = {"q", "page"}
 FieldTransform = Literal[
     "regex_int",
@@ -22,6 +22,11 @@ FieldTransform = Literal[
     "iso_date",
     "absolute_url",
 ]
+
+
+def is_valid_param_name(name: str) -> bool:
+    """Return ``True`` if *name* is a valid Python identifier and not a keyword."""
+    return name.isidentifier() and not keyword.iskeyword(name)
 
 
 class ActionConfig(BaseModel):
@@ -137,10 +142,10 @@ class EndpointConfig(BaseModel):
                 raise ValueError(
                     f"param name '{name}' conflicts with reserved query parameter"
                 )
-            if not _PARAM_NAME_PATTERN.match(name):
+            if not is_valid_param_name(name):
                 raise ValueError(
-                    f"param name '{name}' must match pattern "
-                    "[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"
+                    f"param name '{name}' must be a valid Python identifier "
+                    "(letters/digits/underscore, not starting with a digit, not a keyword)"
                 )
         return self
 

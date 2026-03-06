@@ -13,20 +13,16 @@ import inspect
 import logging
 from typing import Any
 
-import httpx
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from web2api.mcp_utils import (
-    TOOL_NAME_SEP,
     build_tool_name,
     format_tool_result,
     sites_from_registry,
 )
 
 logger = logging.getLogger(__name__)
-
-WEB2API_INTERNAL_URL = "http://127.0.0.1:8000"
 
 # Module-level state for cross-module access (recipe admin hooks).
 _tool_registry: _ToolRegistry | None = None
@@ -35,11 +31,17 @@ _tool_registry: _ToolRegistry | None = None
 class _ToolRegistry:
     """Manages dynamic tool registration on a FastMCP server."""
 
-    def __init__(self, mcp: FastMCP, internal_url: str = WEB2API_INTERNAL_URL):
+    def __init__(
+        self,
+        mcp: FastMCP,
+        *,
+        app: Any,
+        bootstrap_registry: Any = None,
+    ):
         self.mcp = mcp
-        self.internal_url = internal_url
+        self.app = app
+        self._bootstrap_registry = bootstrap_registry
         self._registered_tools: set[str] = set()
-        self._registry: Any = None  # Direct RecipeRegistry reference
 
     # ------------------------------------------------------------------
     # Public
@@ -47,11 +49,12 @@ class _ToolRegistry:
 
     def build_tools(self) -> None:
         """(Re)build MCP tools from the current recipe registry."""
-        if self._registry is None:
+        registry = self._current_registry()
+        if registry is None:
             logger.warning("No recipe registry available for MCP tool build")
             return
 
-        sites = sites_from_registry(self._registry)
+        sites = sites_from_registry(registry)
         self._clear_tools()
         self._register_all(sites)
         logger.info(
@@ -63,6 +66,13 @@ class _ToolRegistry:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _current_registry(self) -> Any:
+        app_state = getattr(self.app, "state", None)
+        live_registry = getattr(app_state, "registry", None) if app_state is not None else None
+        if live_registry is not None:
+            return live_registry
+        return self._bootstrap_registry
 
     def _clear_tools(self) -> None:
         for name in list(self._registered_tools):
@@ -110,7 +120,7 @@ class _ToolRegistry:
         extra_params: dict[str, Any],
     ) -> None:
         # Capture for closure
-        _slug, _endpoint, _url = slug, endpoint, self.internal_url
+        _slug, _endpoint = slug, endpoint
 
         # Build human-readable parameter docs
         param_docs: list[str] = []
@@ -127,25 +137,38 @@ class _ToolRegistry:
 
         # --- tool function ---
         async def _fn(**kwargs: str) -> str:
-            url = f"{_url}/{_slug}/{_endpoint}"
             params: dict[str, str] = {"page": "1"}
             q = kwargs.get("q", "")
             if q:
-                params["q"] = q
+                params["q"] = str(q)
             for k, v in kwargs.items():
                 if k != "q" and v:
                     params[k] = str(v)
 
-            async with httpx.AsyncClient(timeout=120) as client:
-                try:
-                    resp = await client.get(url, params=params)
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    return f"Error: HTTP {e.response.status_code} — {e.response.text[:500]}"
-                except httpx.RequestError as e:
-                    return f"Error: {e}"
+            registry = self._current_registry()
+            if registry is None:
+                return "Error: recipe registry is unavailable"
 
-            return format_tool_result(resp.json())
+            recipe = registry.get(_slug)
+            if recipe is None:
+                return f"Error: recipe '{_slug}' was not found"
+
+            from web2api.main import execute_recipe_endpoint
+
+            try:
+                response = await execute_recipe_endpoint(
+                    app=self.app,
+                    recipe=recipe,
+                    endpoint_name=_endpoint,
+                    page=1,
+                    q=str(q) if q else None,
+                    query_params=params,
+                )
+            except Exception as exc:
+                logger.exception("MCP protocol tool failed: %s", tool_name)
+                return f"Error: {exc}"
+
+            return format_tool_result(response.model_dump(mode="json"))
 
         _fn.__name__ = tool_name
         _fn.__doc__ = full_desc
@@ -158,11 +181,21 @@ class _ToolRegistry:
             )
         else:
             sig_params.append(
-                inspect.Parameter("q", inspect.Parameter.POSITIONAL_OR_KEYWORD, default="", annotation=str)
+                inspect.Parameter(
+                    "q",
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    default="",
+                    annotation=str,
+                )
             )
         for pname in extra_params:
             sig_params.append(
-                inspect.Parameter(pname, inspect.Parameter.POSITIONAL_OR_KEYWORD, default="", annotation=str)
+                inspect.Parameter(
+                    pname,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    default="",
+                    annotation=str,
+                )
             )
 
         _fn.__signature__ = inspect.Signature(parameters=sig_params, return_annotation=str)
@@ -205,8 +238,11 @@ def mount_mcp_server(app: Any, registry: Any = None) -> None:
         ),
     )
 
-    _tool_registry = _ToolRegistry(mcp)
-    _tool_registry._registry = registry
+    _tool_registry = _ToolRegistry(
+        mcp,
+        app=app,
+        bootstrap_registry=registry,
+    )
 
     # Build tools now (registry is already populated at this point).
     _tool_registry.build_tools()

@@ -217,12 +217,22 @@ def test_reserved_param_name_page_is_rejected() -> None:
 
 
 def test_invalid_param_name_is_rejected() -> None:
-    """Param names that don't match the pattern should fail."""
+    """Param names that are not Python identifiers should fail."""
     data = _valid_recipe_data()
     data["endpoints"]["read"]["params"] = {
         "bad!name": {"description": "invalid chars"},
     }
-    with pytest.raises(ValidationError, match="must match pattern"):
+    with pytest.raises(ValidationError, match="valid Python identifier"):
+        RecipeConfig.model_validate(data)
+
+
+def test_keyword_param_name_is_rejected() -> None:
+    """Python keywords are not valid parameter names."""
+    data = _valid_recipe_data()
+    data["endpoints"]["read"]["params"] = {
+        "class": {"description": "invalid keyword"},
+    }
+    with pytest.raises(ValidationError, match="valid Python identifier"):
         RecipeConfig.model_validate(data)
 
 

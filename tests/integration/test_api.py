@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -259,6 +260,9 @@ async def test_api_routes_and_index(
                 invalid_extra_resp = await client.get("/alpha/read?bad!param=1")
                 assert invalid_extra_resp.status_code == 400
                 assert invalid_extra_resp.json()["error"]["code"] == "INVALID_PARAMS"
+                invalid_identifier_resp = await client.get("/alpha/read?model-id=1")
+                assert invalid_identifier_resp.status_code == 400
+                assert invalid_identifier_resp.json()["error"]["code"] == "INVALID_PARAMS"
 
                 # Non-existent endpoint on a recipe (404 from FastAPI)
                 unknown_ep_resp = await client.get("/beta/search")
@@ -525,6 +529,126 @@ async def test_recipe_management_uninstall_force_for_unmanaged_local(
             assert sites_after_uninstall.status_code == 200
             slugs = {site["slug"] for site in sites_after_uninstall.json()}
             assert "local-only" not in slugs
+
+
+@pytest.mark.asyncio
+async def test_mcp_bridge_preserves_special_characters_in_params(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipes_dir = tmp_path / "recipes"
+    _write_recipe(
+        recipes_dir,
+        "alpha",
+        endpoints={
+            "search": {
+                "url": "https://example.com/search?q={query}&page={page}",
+                "requires_query": True,
+                "params": {
+                    "tools_url": {
+                        "description": "MCP bridge URL",
+                        "required": False,
+                    },
+                },
+                "items": {"container": ".item", "fields": {"title": {"selector": ".title"}}},
+                "pagination": {"type": "page_param", "param": "page"},
+            },
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_scrape(
+        *,
+        pool: FakePool,
+        recipe,
+        endpoint: str,
+        page: int = 1,
+        query: str | None = None,
+        extra_params: dict[str, str] | None = None,
+        scrape_timeout: float = 30.0,
+    ) -> ApiResponse:
+        _ = pool, recipe, endpoint, page, scrape_timeout
+        captured["query"] = query
+        captured["extra_params"] = dict(extra_params or {})
+        return _success_response(slug="alpha", endpoint="search", page=1, query=query)
+
+    monkeypatch.setattr("web2api.main.scrape", fake_scrape)
+
+    fake_pool = FakePool()
+    app = create_app(recipes_dir=recipes_dir, pool=fake_pool)
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(
+                "/mcp/tools/alpha__search",
+                json={
+                    "q": "cats & dogs",
+                    "tools_url": "http://localhost:8100/mcp/tools?x=1&y=2",
+                },
+            )
+
+    assert response.status_code == 200
+    assert captured["query"] == "cats & dogs"
+    assert captured["extra_params"] == {
+        "tools_url": "http://localhost:8100/mcp/tools?x=1&y=2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_upload_rejects_path_traversal_filenames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipes_dir = tmp_path / "recipes"
+    _write_recipe(recipes_dir, "alpha")
+
+    captured: dict[str, object] = {}
+    escaped_name = f"web2api_escape_{uuid.uuid4().hex}.txt"
+    escaped_path = Path("/tmp") / escaped_name
+    if escaped_path.exists():
+        escaped_path.unlink()
+
+    async def fake_scrape(
+        *,
+        pool: FakePool,
+        recipe,
+        endpoint: str,
+        page: int = 1,
+        query: str | None = None,
+        extra_params: dict[str, str] | None = None,
+        scrape_timeout: float = 30.0,
+    ) -> ApiResponse:
+        _ = pool, recipe, endpoint, page, query, scrape_timeout
+        captured["extra_params"] = dict(extra_params or {})
+        return _success_response(slug="alpha", endpoint="read", page=1)
+
+    monkeypatch.setattr("web2api.main.scrape", fake_scrape)
+
+    fake_pool = FakePool()
+    app = create_app(recipes_dir=recipes_dir, pool=fake_pool)
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.post(
+                "/alpha/read",
+                files={
+                    "files": (f"../{escaped_name}", b"uploaded-content", "text/plain"),
+                },
+            )
+
+    assert response.status_code == 200
+    assert escaped_path.exists() is False
+    extra_params = captured.get("extra_params")
+    assert isinstance(extra_params, dict)
+    file_paths = extra_params.get("file_paths", [])
+    assert isinstance(file_paths, list)
+    assert len(file_paths) == 1
+    uploaded_path = Path(str(file_paths[0]))
+    assert uploaded_path.name == escaped_name
+    assert "/../" not in str(uploaded_path)
 
 
 @pytest.mark.asyncio
