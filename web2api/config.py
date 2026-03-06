@@ -123,6 +123,7 @@ class EndpointConfig(BaseModel):
     url: str
     description: str | None = None
     requires_query: bool = False
+    tool_name: str | None = None
     actions: list[ActionConfig] = Field(default_factory=list)
     items: ItemsConfig
     pagination: PaginationConfig

@@ -84,7 +84,7 @@ class _ToolRegistry:
                 requires_q = ep.get("requires_query", False)
                 ep_params = ep.get("params", {})
 
-                tool_name = build_tool_name(slug, ep_name)
+                tool_name = build_tool_name(slug, ep_name, ep.get("tool_name"))
                 desc = f"[{site_name}] {ep_desc}" if ep_desc else f"[{site_name}] {ep_name}"
                 if base_url:
                     desc += f" ({base_url})"

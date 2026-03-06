@@ -7,8 +7,14 @@ from typing import Any
 TOOL_NAME_SEP = "__"
 
 
-def build_tool_name(slug: str, endpoint: str) -> str:
-    """Build a tool name from recipe slug and endpoint name."""
+def build_tool_name(slug: str, endpoint: str, override: str | None = None) -> str:
+    """Build a tool name from recipe slug and endpoint name.
+
+    If *override* is given (from endpoint ``tool_name`` config), use that
+    instead of the default ``{slug}__{endpoint}`` convention.
+    """
+    if override:
+        return override
     return f"{slug}{TOOL_NAME_SEP}{endpoint}"
 
 
@@ -74,6 +80,7 @@ def sites_from_registry(registry: Any) -> list[dict[str, Any]]:
                 "name": ep_name,
                 "description": ep_cfg.description,
                 "requires_query": ep_cfg.requires_query,
+                "tool_name": ep_cfg.tool_name,
                 "params": ep_params,
             })
         sites.append({

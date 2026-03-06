@@ -17,10 +17,34 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from web2api.mcp_utils import build_tool_name, parse_tool_name
+from web2api.mcp_utils import TOOL_NAME_SEP, build_tool_name, parse_tool_name
 from web2api.registry import RecipeRegistry
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_tool(registry: RecipeRegistry, tool_name: str) -> tuple[str | None, str | None]:
+    """Resolve a tool name to (slug, endpoint_name).
+
+    Checks custom ``tool_name`` overrides first, then falls back to the
+    standard ``{slug}__{endpoint}`` naming convention.
+    """
+    # Check custom tool_name overrides
+    for recipe in registry.list_all():
+        slug = recipe.config.slug
+        for ep_name, ep_cfg in recipe.config.endpoints.items():
+            if ep_cfg.tool_name and ep_cfg.tool_name == tool_name:
+                return slug, ep_name
+
+    # Fall back to standard naming
+    parsed = parse_tool_name(tool_name)
+    if parsed:
+        slug, ep_name = parsed
+        recipe = registry.get(slug)
+        if recipe and ep_name in recipe.config.endpoints:
+            return slug, ep_name
+
+    return None, None
 
 
 def _build_tool_parameters(endpoint_cfg: Any) -> dict[str, Any]:
@@ -55,6 +79,12 @@ def _build_tool_parameters(endpoint_cfg: Any) -> dict[str, Any]:
     return schema
 
 
+def _tool_slug(registry: RecipeRegistry, tool_name: str) -> str | None:
+    """Get the recipe slug for a tool name (handles custom names)."""
+    slug, _ = _resolve_tool(registry, tool_name)
+    return slug
+
+
 def _tools_from_registry(registry: RecipeRegistry) -> list[dict[str, Any]]:
     """Generate MCP tool definitions from all registered recipes."""
     tools: list[dict[str, Any]] = []
@@ -64,7 +94,7 @@ def _tools_from_registry(registry: RecipeRegistry) -> list[dict[str, Any]]:
         site_name = recipe.config.name
 
         for ep_name, ep_cfg in recipe.config.endpoints.items():
-            tool_name = build_tool_name(slug, ep_name)
+            tool_name = build_tool_name(slug, ep_name, ep_cfg.tool_name)
             description = ep_cfg.description or f"{site_name} — {ep_name}"
             description = f"[{site_name}] {description}"
 
@@ -99,9 +129,9 @@ def register_mcp_routes(app: FastAPI) -> None:
         exclude_set = {s.strip() for s in exclude.split(",") if s.strip()} if exclude else None
 
         if only_set:
-            tools = [t for t in tools if parse_tool_name(t["name"])[0] in only_set]
+            tools = [t for t in tools if _tool_slug(registry, t["name"]) in only_set]
         if exclude_set:
-            tools = [t for t in tools if parse_tool_name(t["name"])[0] not in exclude_set]
+            tools = [t for t in tools if _tool_slug(registry, t["name"]) not in exclude_set]
 
         return tools
 
@@ -123,9 +153,9 @@ def register_mcp_routes(app: FastAPI) -> None:
         slugs = {s.strip() for s in filter_value.split(",") if s.strip()}
 
         if filter_type == "only":
-            tools = [t for t in tools if parse_tool_name(t["name"])[0] in slugs]
+            tools = [t for t in tools if _tool_slug(registry, t["name"]) in slugs]
         elif filter_type == "exclude":
-            tools = [t for t in tools if parse_tool_name(t["name"])[0] not in slugs]
+            tools = [t for t in tools if _tool_slug(registry, t["name"]) not in slugs]
 
         return tools
 
@@ -149,16 +179,12 @@ def register_mcp_routes(app: FastAPI) -> None:
         Accepts a JSON body with the tool parameters (e.g. ``{"q": "..."}``)
         and returns ``{"result": ...}`` with the scraped data.
         """
-        parsed = parse_tool_name(tool_name)
-        if parsed is None:
-            raise HTTPException(status_code=404, detail=f"Invalid tool name: {tool_name}")
-
-        slug, endpoint_name = parsed
         registry: RecipeRegistry = request.app.state.registry
-        recipe = registry.get(slug)
-
-        if recipe is None or endpoint_name not in recipe.config.endpoints:
+        slug, endpoint_name = _resolve_tool(registry, tool_name)
+        if slug is None:
             raise HTTPException(status_code=404, detail=f"Tool not found: {tool_name}")
+
+        recipe = registry.get(slug)
 
         try:
             body = await request.json()
