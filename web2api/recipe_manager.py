@@ -397,10 +397,10 @@ def _derive_github_readme_url(
         return None
     ref = quote(source_ref or "HEAD", safe="")
     cleaned_subdir = str(source_subdir or "").strip("/")
-    encoded_subdir = "/".join(quote(part, safe="") for part in cleaned_subdir.split("/") if part)
+    encoded_subdir = "/".join(quote(part, safe="") for part in cleaned_subdir.split("/") if part and part != ".")
     if encoded_subdir:
-        return f"https://github.com/{repo}/blob/{ref}/{encoded_subdir}/README.md"
-    return f"https://github.com/{repo}/blob/{ref}/README.md"
+        return f"https://github.com/{repo}/tree/{ref}/{encoded_subdir}"
+    return f"https://github.com/{repo}/tree/{ref}"
 
 
 def load_catalog(catalog_file: Path) -> dict[str, dict[str, Any]]:
