@@ -294,6 +294,8 @@ transport. Claude Desktop requires a local stdio bridge:
 Add to your `claude_desktop_config.json`
 ([location](https://modelcontextprotocol.io/quickstart/user#configure-claude-for-desktop)):
 
+Without access token:
+
 ```json
 {
   "mcpServers": {
@@ -305,12 +307,38 @@ Add to your `claude_desktop_config.json`
 }
 ```
 
+With access token:
+
+```json
+{
+  "mcpServers": {
+    "web2api": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "https://your-web2api-host/mcp/",
+        "--header", "Authorization: Bearer YOUR_TOKEN_HERE"
+      ]
+    }
+  }
+}
+```
+
 > **Requires Node.js ≥ 18** on the machine running Claude Desktop.
 
 ### Connecting Claude Code
 
+Without access token:
+
 ```bash
 claude mcp add --transport http web2api https://your-web2api-host/mcp/
+```
+
+With access token:
+
+```bash
+claude mcp add --transport http web2api https://your-web2api-host/mcp/ \
+  --header "Authorization: Bearer YOUR_TOKEN_HERE"
 ```
 
 ### Connecting Other MCP Clients
@@ -616,6 +644,8 @@ Environment variables (with defaults):
 | `WEB2API_RECIPE_CATALOG_REF` | empty | Optional git ref for catalog source |
 | `WEB2API_RECIPE_CATALOG_PATH` | `catalog.yaml` | Catalog file path inside catalog source |
 | `PLUGIN_ENFORCE_COMPATIBILITY` | false | Skip plugin recipes outside declared `web2api` version bounds |
+| `WEB2API_ACCESS_TOKEN` | empty | Shared access token for admin API and MCP endpoints |
+| `WEB2API_ACCESS_TOKEN_FILE` | empty | Path to file containing the access token (alternative to `WEB2API_ACCESS_TOKEN`) |
 | `BIRD_AUTH_TOKEN` | empty | X/Twitter auth token for `x` recipe |
 | `BIRD_CT0` | empty | X/Twitter ct0 token for `x` recipe |
 
