@@ -106,6 +106,38 @@ docker compose exec web2api web2api recipes catalog add hackernews --yes
 5. Install initial recipes via CLI/API/UI.
 6. Put reverse proxy/TLS in front (Nginx/Caddy/Traefik) for production.
 
+## Access Token
+
+Web2API can protect the sensitive management and MCP surfaces with a shared access token.
+
+Set one of:
+- `WEB2API_ACCESS_TOKEN`
+- `WEB2API_ACCESS_TOKEN_FILE` (path to a file containing the token)
+
+When configured, Web2API requires the token for:
+- `/api/recipes/manage*`
+- `/mcp*`
+
+Send the token as either:
+- `Authorization: Bearer <token>`
+- `X-Web2API-Key: <token>`
+
+Public scrape/discovery routes remain open:
+- `/`
+- `/health`
+- `/api/sites`
+- `/{slug}/{endpoint}`
+
+Examples:
+
+```bash
+curl -H "Authorization: Bearer $WEB2API_ACCESS_TOKEN" http://localhost:8010/api/recipes/manage
+curl -H "Authorization: Bearer $WEB2API_ACCESS_TOKEN" http://localhost:8010/mcp/tools
+```
+
+When token auth is enabled, the built-in web UI shows an access-token input and stores the token in
+browser local storage for repository/MCP actions.
+
 ## CLI
 
 Web2API ships with a management CLI:
@@ -173,7 +205,8 @@ If `docs_url` is omitted and the recipe source resolves to GitHub, Web2API autom
 links to `<repo>/blob/<ref-or-HEAD>/<subdir>/README.md`.
 
 Recipes installed from untrusted sources (for example git URLs) are blocked from executing
-install/healthcheck commands unless `--allow-untrusted` is passed.
+install/healthcheck commands unless `--allow-untrusted` is passed. Untrusted recipes also do not
+load `scraper.py`; only declarative YAML endpoints are available until the recipe is trusted.
 
 ### Custom Local Recipes (Without Catalog)
 
@@ -295,7 +328,7 @@ Transport: Streamable HTTP
   (e.g. `brave-search__search`, `deepl__de-en`, `allenai__olmo-32b`)
 - Tools include proper descriptions and typed parameter schemas
 - When recipes are installed/uninstalled via the admin API, tools rebuild automatically
-- No authentication required (secure the endpoint via your reverse proxy if needed)
+- Optional access-token protection is available via `WEB2API_ACCESS_TOKEN`
 
 ### Example Tools
 
@@ -329,12 +362,12 @@ A simpler HTTP-based tool bridge is also available for non-MCP clients:
 | `GET /` | HTML index listing all recipes and endpoints |
 | `GET /health` | Service, browser pool, and cache health |
 | `GET /api/sites` | JSON list of all recipes with endpoint metadata |
-| `GET /api/recipes/manage` | JSON catalog + installed recipe state for UI/automation |
-| `POST /api/recipes/manage/install/{name}` | Install recipe by catalog entry name |
-| `POST /api/recipes/manage/update/{slug}` | Update installed managed recipe |
-| `POST /api/recipes/manage/uninstall/{slug}` | Uninstall recipe (add `?force=true` for unmanaged local recipes) |
-| `POST /api/recipes/manage/enable/{slug}` | Enable installed recipe |
-| `POST /api/recipes/manage/disable/{slug}` | Disable installed recipe |
+| `GET /api/recipes/manage` | JSON catalog + installed recipe state for UI/automation (protected when token auth is enabled) |
+| `POST /api/recipes/manage/install/{name}` | Install recipe by catalog entry name (protected when token auth is enabled) |
+| `POST /api/recipes/manage/update/{slug}` | Update installed managed recipe (protected when token auth is enabled) |
+| `POST /api/recipes/manage/uninstall/{slug}` | Uninstall recipe (add `?force=true` for unmanaged local recipes, protected when token auth is enabled) |
+| `POST /api/recipes/manage/enable/{slug}` | Enable installed recipe (protected when token auth is enabled) |
+| `POST /api/recipes/manage/disable/{slug}` | Disable installed recipe (protected when token auth is enabled) |
 
 `GET /api/recipes/manage` includes:
 - `catalog`: entries from the current catalog source

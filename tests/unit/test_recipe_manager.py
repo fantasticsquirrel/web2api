@@ -387,6 +387,40 @@ def test_install_recipe_from_source_sparse_checkout_for_subdir(
     )
 
 
+def test_install_recipe_from_source_rejects_invalid_plugin(tmp_path: Path) -> None:
+    source_recipe = tmp_path / "source-recipe"
+    _write_recipe(source_recipe)
+    (source_recipe / "plugin.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "version": "1.0.0",
+                "requires_env": ["bad-name"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires_env"):
+        install_recipe_from_source(
+            source=str(source_recipe),
+            recipes_dir=tmp_path / "recipes",
+            trusted=True,
+        )
+
+
+def test_install_recipe_from_source_rejects_invalid_trusted_scraper(tmp_path: Path) -> None:
+    source_recipe = tmp_path / "source-recipe"
+    _write_recipe(source_recipe)
+    (source_recipe / "scraper.py").write_text("class Nope:\n    pass\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must define a Scraper class"):
+        install_recipe_from_source(
+            source=str(source_recipe),
+            recipes_dir=tmp_path / "recipes",
+            trusted=True,
+        )
+
+
 def test_compute_tree_hash_in_git_repo(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

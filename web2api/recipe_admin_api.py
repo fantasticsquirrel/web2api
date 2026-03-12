@@ -29,13 +29,28 @@ from web2api.recipe_manager import (
 from web2api.registry import RecipeRegistry
 
 
+def _discover_registry(
+    recipes_dir: Path,
+    *,
+    app_version: str,
+    enforce_plugin_compatibility: bool,
+) -> RecipeRegistry:
+    registry = RecipeRegistry(
+        app_version=app_version,
+        enforce_plugin_compatibility=enforce_plugin_compatibility,
+    )
+    registry.discover(recipes_dir)
+    return registry
+
+
 async def _reload_registry_and_tools(app: FastAPI, *, app_version: str) -> None:
     """Reload the recipe registry and rebuild MCP tools."""
-    registry = RecipeRegistry(
+    registry = await asyncio.to_thread(
+        _discover_registry,
+        app.state.recipes_dir,
         app_version=app_version,
         enforce_plugin_compatibility=app.state.enforce_plugin_compatibility,
     )
-    registry.discover(app.state.recipes_dir)
     app.state.registry = registry
 
     # Rebuild MCP tools so connected clients see the change
@@ -64,7 +79,8 @@ def register_recipe_admin_routes(app: FastAPI, *, app_version: str) -> None:
         installed_by_slug = {str(item["slug"]): item for item in installed_payload}
 
         try:
-            catalog = resolve_catalog_recipes(
+            catalog = await asyncio.to_thread(
+                resolve_catalog_recipes,
                 catalog_source=catalog_source,
                 catalog_ref=catalog_ref,
                 catalog_path=catalog_path,
@@ -136,7 +152,8 @@ def register_recipe_admin_routes(app: FastAPI, *, app_version: str) -> None:
         lock: asyncio.Lock = request.app.state.recipe_admin_lock
         async with lock:
             try:
-                catalog = resolve_catalog_recipes(
+                catalog = await asyncio.to_thread(
+                    resolve_catalog_recipes,
                     catalog_source=request.app.state.catalog_source,
                     catalog_ref=request.app.state.catalog_ref,
                     catalog_path=request.app.state.catalog_path,
@@ -149,7 +166,8 @@ def register_recipe_admin_routes(app: FastAPI, *, app_version: str) -> None:
                 raise HTTPException(status_code=404, detail=f"catalog entry '{name}' not found")
 
             try:
-                slug, source_type = install_recipe_from_source(
+                slug, source_type = await asyncio.to_thread(
+                    install_recipe_from_source,
                     source=spec.source,
                     recipes_dir=request.app.state.recipes_dir,
                     source_ref=spec.source_ref,
@@ -196,7 +214,8 @@ def register_recipe_admin_routes(app: FastAPI, *, app_version: str) -> None:
 
             was_disabled = entry is not None and not entry.enabled
             try:
-                updated_slug, source_type = install_recipe_from_source(
+                updated_slug, source_type = await asyncio.to_thread(
+                    install_recipe_from_source,
                     source=managed_source.source,
                     recipes_dir=recipes_dir,
                     source_ref=managed_source.source_ref,

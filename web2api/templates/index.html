@@ -102,6 +102,30 @@
         gap: 0.45rem;
       }
 
+      .auth-panel {
+        margin-top: 0.95rem;
+        border: 1px solid rgba(17, 79, 85, 0.18);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.82);
+        padding: 0.82rem;
+      }
+
+      .auth-row {
+        margin-top: 0.55rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: center;
+      }
+
+      .auth-input {
+        flex: 1 1 320px;
+      }
+
+      .auth-meta {
+        margin-top: 0.5rem;
+      }
+
       .view-tabs {
         margin-top: 0.9rem;
         display: inline-flex;
@@ -593,6 +617,38 @@
           <span class="pill"><strong id="visibleEndpoints">0</strong> visible endpoints</span>
           <span class="pill">pattern /&lt;slug&gt;/&lt;endpoint&gt;</span>
         </div>
+
+        {% if auth.enabled %}
+        <section class="auth-panel" aria-label="Protected access">
+          <div class="manager-top">
+            <div>
+              <span class="manager-name">Protected Surfaces</span>
+              <p class="manager-meta">
+                This server requires an access token for the recipe repository and MCP routes.
+                Public scrape endpoints remain available without a token.
+              </p>
+            </div>
+          </div>
+          <div class="auth-row">
+            <input
+              class="filter auth-input"
+              id="authTokenInput"
+              type="password"
+              placeholder="Paste access token"
+              autocomplete="current-password"
+              spellcheck="false"
+            />
+            <button class="manager-btn" id="authSave" type="button">Save</button>
+            <button class="manager-btn" id="authClear" type="button">Clear</button>
+          </div>
+          <p class="manager-meta auth-meta">
+            Send <code>{{ auth.header }}: {{ auth.scheme }} &lt;token&gt;</code> or
+            <code>{{ auth.alternate_header }}: &lt;token&gt;</code> for
+            {{ auth.protected_surfaces|join(", ") }}.
+          </p>
+          <p class="manager-status" id="authStatus"></p>
+        </section>
+        {% endif %}
       </header>
 
       <div class="view-tabs" role="tablist" aria-label="Recipe views">
@@ -795,6 +851,7 @@
 
     <script>
       (() => {
+        const authConfig = {{ auth|tojson }};
         const rows = Array.from(document.querySelectorAll(".row"));
         const filterInput = document.getElementById("filterInput");
         const visibleSites = document.getElementById("visibleSites");
@@ -917,17 +974,116 @@
         const managerStatus = document.getElementById("managerStatus");
         const managerList = document.getElementById("managerList");
         const managerReload = document.getElementById("managerReload");
+        const authTokenInput = document.getElementById("authTokenInput");
+        const authSave = document.getElementById("authSave");
+        const authClear = document.getElementById("authClear");
+        const authStatus = document.getElementById("authStatus");
         if (!managerSource || !managerStatus || !managerList || !managerReload) {
           return;
         }
 
         let busy = false;
         let updateStatus = {};
+        let mcpLoaded = false;
+
+        const authStorageKey =
+          typeof authConfig.storage_key === "string" && authConfig.storage_key
+            ? authConfig.storage_key
+            : "web2api.access_token";
 
         const setStatus = (message, { error = false } = {}) => {
           managerStatus.textContent = message;
           managerStatus.classList.toggle("is-error", error);
         };
+
+        const setAuthStatus = (message, { error = false } = {}) => {
+          if (!authStatus) {
+            return;
+          }
+          authStatus.textContent = message;
+          authStatus.classList.toggle("is-error", error);
+        };
+
+        const getStoredToken = () => {
+          if (!authConfig.enabled) {
+            return "";
+          }
+          try {
+            return window.localStorage.getItem(authStorageKey) || "";
+          } catch (_error) {
+            return "";
+          }
+        };
+
+        const storeToken = (value) => {
+          try {
+            window.localStorage.setItem(authStorageKey, value);
+          } catch (_error) {}
+        };
+
+        const clearStoredToken = () => {
+          try {
+            window.localStorage.removeItem(authStorageKey);
+          } catch (_error) {}
+        };
+
+        const protectedHeaders = (headersInit) => {
+          const headers = new Headers(headersInit || {});
+          const token = getStoredToken().trim();
+          if (
+            token &&
+            !headers.has("Authorization") &&
+            !headers.has("X-Web2API-Key")
+          ) {
+            headers.set("Authorization", `Bearer ${token}`);
+          }
+          return headers;
+        };
+
+        const protectedFetch = (input, init = {}) =>
+          fetch(input, {
+            ...init,
+            headers: protectedHeaders(init.headers),
+          });
+
+        const clearProtectedViews = () => {
+          updateStatus = {};
+          managerList.replaceChildren();
+          const mcpList = document.getElementById("mcpList");
+          if (mcpList) {
+            mcpList.replaceChildren();
+          }
+        };
+
+        const requireToken = (setScopeStatus) => {
+          if (!authConfig.enabled) {
+            return true;
+          }
+          const token = getStoredToken().trim();
+          if (token) {
+            return true;
+          }
+          const message = "Access token required. Enter it above to use repository and MCP features.";
+          if (typeof setScopeStatus === "function") {
+            setScopeStatus(message, { error: true });
+          }
+          setAuthStatus(message, { error: true });
+          return false;
+        };
+
+        const noteUnauthorized = () => {
+          if (!authConfig.enabled) {
+            return;
+          }
+          setAuthStatus("Stored access token was rejected by the server.", { error: true });
+        };
+
+        if (authTokenInput) {
+          authTokenInput.value = getStoredToken();
+        }
+        if (authConfig.enabled && !getStoredToken().trim()) {
+          setAuthStatus("Access token required for repository and MCP features.");
+        }
 
         const readError = async (response) => {
           try {
@@ -1006,14 +1162,20 @@
         const isHttpUrl = (value) => typeof value === "string" && /^https?:\/\//i.test(value);
 
         const runAction = async ({ url, label }) => {
+          if (!requireToken(setStatus)) {
+            return;
+          }
           if (busy) {
             return;
           }
           busy = true;
           setStatus(`${label}...`);
           try {
-            const response = await fetch(url, { method: "POST" });
+            const response = await protectedFetch(url, { method: "POST" });
             if (!response.ok) {
+              if (response.status === 401) {
+                noteUnauthorized();
+              }
               throw new Error(await readError(response));
             }
             setStatus(`${label} complete. Reloading...`);
@@ -1249,17 +1411,24 @@
         };
 
         const loadCatalog = async () => {
+          if (!requireToken(setStatus)) {
+            clearProtectedViews();
+            return;
+          }
           setStatus("Loading catalog...");
           try {
-            const response = await fetch("/api/recipes/manage");
+            const response = await protectedFetch("/api/recipes/manage");
             if (!response.ok) {
+              if (response.status === 401) {
+                noteUnauthorized();
+              }
               throw new Error(await readError(response));
             }
             const payload = await response.json();
             renderCatalog(payload);
 
             // Check for updates in the background.
-            fetch("/api/recipes/manage/check-updates", { method: "POST" })
+            protectedFetch("/api/recipes/manage/check-updates", { method: "POST" })
               .then((r) => (r.ok ? r.json() : null))
               .then((data) => {
                 if (data && typeof data.updates === "object" && data.updates !== null) {
@@ -1289,6 +1458,11 @@
         const mcpReload = document.getElementById("mcpReload");
         const mcpCopyBase = document.getElementById("mcpCopyBase");
         const mcpBaseUrl = document.getElementById("mcpBaseUrl");
+        const setMcpStatus = (message, { error = false } = {}) => {
+          if (!mcpStatus) return;
+          mcpStatus.textContent = message;
+          mcpStatus.classList.toggle("is-error", error);
+        };
 
         if (mcpCopyBase && mcpBaseUrl) {
           mcpCopyBase.addEventListener("click", async () => {
@@ -1415,17 +1589,24 @@
 
         const loadMcpTools = async () => {
           if (!mcpStatus || !mcpList) return;
-          mcpStatus.textContent = "Loading tools...";
-          mcpStatus.classList.remove("is-error");
+          if (!requireToken(setMcpStatus)) {
+            mcpList.replaceChildren();
+            return;
+          }
+          setMcpStatus("Loading tools...");
           try {
-            const resp = await fetch("/mcp/tools");
-            if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+            const resp = await protectedFetch("/mcp/tools");
+            if (!resp.ok) {
+              if (resp.status === 401) {
+                noteUnauthorized();
+              }
+              throw new Error(await readError(resp));
+            }
             const tools = await resp.json();
-            mcpStatus.textContent = `${tools.length} tools available across all recipes.`;
+            setMcpStatus(`${tools.length} tools available across all recipes.`);
             renderMcpTools(tools);
           } catch (err) {
-            mcpStatus.textContent = err.message || "Failed to load tools.";
-            mcpStatus.classList.add("is-error");
+            setMcpStatus(err.message || "Failed to load tools.", { error: true });
           }
         };
 
@@ -1433,8 +1614,43 @@
           mcpReload.addEventListener("click", () => void loadMcpTools());
         }
 
+        if (authSave) {
+          authSave.addEventListener("click", () => {
+            if (!authTokenInput) {
+              return;
+            }
+            const value = authTokenInput.value.trim();
+            if (!value) {
+              setAuthStatus("Enter an access token before saving.", { error: true });
+              return;
+            }
+            storeToken(value);
+            setAuthStatus("Access token saved in this browser.");
+            void loadCatalog();
+            if (mcpLoaded) {
+              void loadMcpTools();
+            }
+          });
+        }
+
+        if (authClear) {
+          authClear.addEventListener("click", () => {
+            clearStoredToken();
+            if (authTokenInput) {
+              authTokenInput.value = "";
+            }
+            clearProtectedViews();
+            setStatus("Access token cleared. Repository access is disabled until you enter it again.", {
+              error: true,
+            });
+            setMcpStatus("Access token cleared. Enter it above to load MCP tools.", {
+              error: true,
+            });
+            setAuthStatus("Access token cleared from this browser.");
+          });
+        }
+
         // Lazy-load MCP tools when tab is first activated
-        let mcpLoaded = false;
         const mcpTab = document.getElementById("tabMcp");
         if (mcpTab) {
           mcpTab.addEventListener("click", () => {

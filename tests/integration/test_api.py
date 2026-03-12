@@ -333,6 +333,145 @@ async def test_api_routes_and_index(
 
 
 @pytest.mark.asyncio
+async def test_endpoint_requires_declared_required_extra_params(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipes_dir = tmp_path / "recipes"
+    _write_recipe(
+        recipes_dir,
+        "alpha",
+        endpoints={
+            "read": {
+                "url": "https://example.com/items?page={page}",
+                "params": {
+                    "token": {
+                        "description": "Required token",
+                        "required": True,
+                    }
+                },
+                "items": {"container": ".item", "fields": {"title": {"selector": ".title"}}},
+                "pagination": {"type": "page_param", "param": "page"},
+            },
+        },
+    )
+
+    calls = 0
+    captured: dict[str, object] = {}
+
+    async def fake_scrape(
+        *,
+        pool: FakePool,
+        recipe,
+        endpoint: str,
+        page: int = 1,
+        query: str | None = None,
+        extra_params: dict[str, str] | None = None,
+        scrape_timeout: float = 30.0,
+    ) -> ApiResponse:
+        _ = pool, recipe, endpoint, query, scrape_timeout
+        nonlocal calls
+        calls += 1
+        captured["extra_params"] = dict(extra_params or {})
+        return _success_response(slug="alpha", endpoint="read", page=page)
+
+    monkeypatch.setattr("web2api.main.scrape", fake_scrape)
+
+    fake_pool = FakePool()
+    app = create_app(recipes_dir=recipes_dir, pool=fake_pool)
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            missing_param = await client.get("/alpha/read")
+            assert missing_param.status_code == 400
+            assert missing_param.json()["error"]["code"] == "INVALID_PARAMS"
+            assert "token" in missing_param.json()["error"]["message"]
+            assert calls == 0
+
+            success = await client.get("/alpha/read?token=secret")
+            assert success.status_code == 200
+            assert calls == 1
+
+    assert captured["extra_params"] == {"token": "secret"}
+
+
+@pytest.mark.asyncio
+async def test_access_token_protects_admin_and_mcp_surfaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipes_dir = tmp_path / "recipes"
+    _write_recipe(recipes_dir, "alpha")
+
+    async def fake_scrape(
+        *,
+        pool: FakePool,
+        recipe,
+        endpoint: str,
+        page: int = 1,
+        query: str | None = None,
+        extra_params: dict[str, str] | None = None,
+        scrape_timeout: float = 30.0,
+    ) -> ApiResponse:
+        _ = pool, recipe, endpoint, query, extra_params, scrape_timeout
+        return _success_response(slug="alpha", endpoint="read", page=page)
+
+    monkeypatch.setattr("web2api.main.scrape", fake_scrape)
+    monkeypatch.setenv("WEB2API_ACCESS_TOKEN", "secret-token")
+
+    fake_pool = FakePool()
+    app = create_app(recipes_dir=recipes_dir, pool=fake_pool)
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            public_resp = await client.get("/alpha/read")
+            assert public_resp.status_code == 200
+
+            sites_resp = await client.get("/api/sites")
+            assert sites_resp.status_code == 200
+
+            health_resp = await client.get("/health")
+            assert health_resp.status_code == 200
+
+            index_resp = await client.get("/")
+            assert index_resp.status_code == 200
+            assert "Paste access token" in index_resp.text
+
+            manage_resp = await client.get("/api/recipes/manage")
+            assert manage_resp.status_code == 401
+            assert manage_resp.headers["www-authenticate"] == 'Bearer realm="web2api"'
+
+            updates_resp = await client.post("/api/recipes/manage/check-updates")
+            assert updates_resp.status_code == 401
+
+            mcp_tools_resp = await client.get("/mcp/tools")
+            assert mcp_tools_resp.status_code == 401
+
+            mcp_root_resp = await client.get("/mcp/")
+            assert mcp_root_resp.status_code == 401
+
+            authorized_manage = await client.get(
+                "/api/recipes/manage",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+            assert authorized_manage.status_code == 200
+
+            alt_header_manage = await client.get(
+                "/api/recipes/manage",
+                headers={"X-Web2API-Key": "secret-token"},
+            )
+            assert alt_header_manage.status_code == 200
+
+            authorized_mcp = await client.get(
+                "/mcp/tools",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+            assert authorized_mcp.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_response_cache_serves_fresh_and_stale_results(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -8,12 +8,14 @@ from importlib import util
 from importlib.machinery import ModuleSpec
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import yaml
 
 from web2api.config import RecipeConfig, parse_recipe_config
 from web2api.logging_utils import log_event
 from web2api.plugin import PluginConfig, evaluate_plugin_status, parse_plugin_config
+from web2api.recipe_manager import entry_is_trusted, get_manifest_record, load_manifest
 from web2api.scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class RecipeRegistry:
             )
             return
 
+        manifest = load_manifest(recipes_dir)
         log_event(logger, logging.INFO, "registry.discover_started", recipes_dir=str(recipes_dir))
         for recipe_dir in sorted(path for path in recipes_dir.iterdir() if path.is_dir()):
             if (recipe_dir / _DISABLED_MARKER).exists():
@@ -68,7 +71,7 @@ class RecipeRegistry:
                 )
                 continue
             try:
-                recipe = self._load_recipe(recipe_dir)
+                recipe = self._load_recipe(recipe_dir, manifest=manifest)
             except Exception as exc:  # noqa: BLE001
                 log_event(
                     logger,
@@ -159,7 +162,12 @@ class RecipeRegistry:
         """Return the number of discovered recipes."""
         return len(self._recipes)
 
-    def _load_recipe(self, recipe_dir: Path) -> Recipe | None:
+    def _load_recipe(
+        self,
+        recipe_dir: Path,
+        *,
+        manifest: dict[str, Any] | None = None,
+    ) -> Recipe | None:
         recipe_config_path = recipe_dir / "recipe.yaml"
         if not recipe_config_path.exists():
             return None
@@ -172,7 +180,9 @@ class RecipeRegistry:
 
         recipe_data = {str(key): value for key, value in raw_data.items()}
         config = parse_recipe_config(recipe_data, folder_name=recipe_dir.name)
-        scraper = self._load_scraper(recipe_dir)
+        manifest_record = get_manifest_record(manifest or {}, config.slug)
+        trusted = entry_is_trusted(manifest_record)
+        scraper = self._load_scraper(recipe_dir, trusted=trusted)
         plugin = self._load_plugin(recipe_dir)
         return Recipe(config=config, scraper=scraper, path=recipe_dir, plugin=plugin)
 
@@ -190,9 +200,21 @@ class RecipeRegistry:
         plugin_data = {str(key): value for key, value in raw_data.items()}
         return parse_plugin_config(plugin_data)
 
-    def _load_scraper(self, recipe_dir: Path) -> BaseScraper | None:
+    def _load_scraper(self, recipe_dir: Path, *, trusted: bool) -> BaseScraper | None:
         scraper_path = recipe_dir / "scraper.py"
         if not scraper_path.exists():
+            return None
+        if not trusted:
+            log_event(
+                logger,
+                logging.WARNING,
+                "registry.scraper_skipped_untrusted",
+                recipe_dir=recipe_dir.name,
+            )
+            logger.warning(
+                "Skipping custom scraper for untrusted recipe '%s'",
+                recipe_dir.name,
+            )
             return None
 
         module_name = f"_web2api_recipe_{recipe_dir.name}"

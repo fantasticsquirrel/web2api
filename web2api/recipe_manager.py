@@ -15,7 +15,10 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import util
+from importlib.machinery import ModuleSpec
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal
 from urllib.parse import quote
 
@@ -23,6 +26,7 @@ import yaml
 
 from web2api.config import parse_recipe_config
 from web2api.plugin import PluginConfig, build_plugin_payload, parse_plugin_config
+from web2api.scraper import BaseScraper
 
 logger = logging.getLogger(__name__)
 
@@ -349,11 +353,13 @@ def _normalize_catalog_requires_env(
         env_name = raw_name.strip()
         if not env_name:
             raise ValueError(
-                f"{catalog_file} recipe '{recipe_name}' field 'requires_env' must not contain empty entries"
+                f"{catalog_file} recipe '{recipe_name}' field "
+                "'requires_env' must not contain empty entries"
             )
         if not CATALOG_ENV_NAME_PATTERN.match(env_name):
             raise ValueError(
-                f"{catalog_file} recipe '{recipe_name}' field 'requires_env' has invalid env name {env_name!r}"
+                f"{catalog_file} recipe '{recipe_name}' field "
+                f"'requires_env' has invalid env name {env_name!r}"
             )
         if env_name not in normalized:
             normalized.append(env_name)
@@ -397,7 +403,11 @@ def _derive_github_readme_url(
         return None
     ref = quote(source_ref or "HEAD", safe="")
     cleaned_subdir = str(source_subdir or "").strip("/")
-    encoded_subdir = "/".join(quote(part, safe="") for part in cleaned_subdir.split("/") if part and part != ".")
+    encoded_subdir = "/".join(
+        quote(part, safe="")
+        for part in cleaned_subdir.split("/")
+        if part and part != "."
+    )
     if encoded_subdir:
         return f"https://github.com/{repo}/blob/{ref}/{encoded_subdir}/README.md"
     return f"https://github.com/{repo}/blob/{ref}/README.md"
@@ -1104,6 +1114,59 @@ def load_source_recipe_slug(source_recipe_dir: Path) -> str:
     return config.slug
 
 
+def _load_module(spec: ModuleSpec) -> ModuleType:
+    module = util.module_from_spec(spec)
+    if not isinstance(module, ModuleType):
+        raise ImportError("failed to create module object for scraper")
+    return module
+
+
+def _validate_source_scraper(source_recipe_dir: Path) -> None:
+    scraper_path = source_recipe_dir / "scraper.py"
+    if not scraper_path.exists():
+        return
+
+    module_name = f"_web2api_source_{source_recipe_dir.name}_{abs(hash(scraper_path))}"
+    spec = util.spec_from_file_location(module_name, scraper_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"failed to load scraper module from {scraper_path}")
+
+    module = _load_module(spec)
+    spec.loader.exec_module(module)
+
+    scraper_cls = getattr(module, "Scraper", None)
+    if scraper_cls is None:
+        raise ValueError(f"{scraper_path} must define a Scraper class")
+
+    scraper = scraper_cls()
+    if not isinstance(scraper, BaseScraper):
+        raise TypeError(f"{scraper_path} Scraper must subclass BaseScraper")
+
+
+def validate_source_recipe_dir(source_recipe_dir: Path, *, trusted: bool) -> str:
+    """Validate source recipe config and metadata before installation."""
+    recipe_data, error = _load_recipe_config(source_recipe_dir)
+    if recipe_data is None:
+        raise ValueError(error or f"invalid source recipe in {source_recipe_dir}")
+
+    config = parse_recipe_config(recipe_data)
+
+    _plugin, plugin_error = _load_plugin(source_recipe_dir)
+    if plugin_error is not None:
+        raise ValueError(plugin_error)
+
+    if trusted:
+        _validate_source_scraper(source_recipe_dir)
+    elif (source_recipe_dir / "scraper.py").exists():
+        logger.warning(
+            "Skipping custom scraper validation for untrusted recipe '%s'; "
+            "the scraper will remain disabled until the recipe is trusted",
+            config.slug,
+        )
+
+    return config.slug
+
+
 def copy_recipe_into_recipes_dir(
     source_recipe_dir: Path,
     recipes_dir: Path,
@@ -1155,7 +1218,7 @@ def install_recipe_from_source(
         sparse_paths=sparse_paths,
     ) as source_root:
         source_recipe_dir = resolve_recipe_source_dir(source_root, source_subdir)
-        source_slug = load_source_recipe_slug(source_recipe_dir)
+        source_slug = validate_source_recipe_dir(source_recipe_dir, trusted=trusted)
         if expected_slug is not None and source_slug != expected_slug:
             raise ValueError(
                 f"source recipe slug '{source_slug}' does not match expected slug '{expected_slug}'"

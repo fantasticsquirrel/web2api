@@ -175,31 +175,41 @@ class _ToolRegistry:
 
         # Build typed signature so the MCP SDK generates proper JSON Schema
         sig_params: list[inspect.Parameter] = []
+        annotations: dict[str, Any] = {}
+        required_params: list[str] = []
+        optional_params: list[str] = []
+
         if requires_q:
-            sig_params.append(
-                inspect.Parameter("q", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=str)
-            )
+            required_params.append("q")
         else:
-            sig_params.append(
-                inspect.Parameter(
-                    "q",
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    default="",
-                    annotation=str,
-                )
-            )
-        for pname in extra_params:
+            optional_params.append("q")
+        for pname, pcfg in extra_params.items():
+            if pcfg.get("required"):
+                required_params.append(pname)
+            else:
+                optional_params.append(pname)
+
+        for pname in required_params:
             sig_params.append(
                 inspect.Parameter(
                     pname,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    annotation=str,
+                )
+            )
+            annotations[pname] = str
+        for pname in optional_params:
+            sig_params.append(
+                inspect.Parameter(
+                    pname,
+                    inspect.Parameter.KEYWORD_ONLY,
                     default="",
                     annotation=str,
                 )
             )
-
+            annotations[pname] = str
         _fn.__signature__ = inspect.Signature(parameters=sig_params, return_annotation=str)
-        _fn.__annotations__ = {"return": str}
+        _fn.__annotations__ = {**annotations, "return": str}
 
         self.mcp.tool(name=tool_name, description=full_desc)(_fn)
 

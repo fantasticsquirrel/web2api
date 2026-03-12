@@ -369,4 +369,7 @@ def test_recipes_catalog_list_prints_docs_and_requires_env(
 
     assert result.exit_code == 0
     assert "requires env: BIRD_AUTH_TOKEN, BIRD_CT0" in result.output
-    assert "docs: https://github.com/acme/web2api-recipes/blob/main/recipes/x/README.md" in result.output
+    assert (
+        "docs: https://github.com/acme/web2api-recipes/blob/main/recipes/x/README.md"
+        in result.output
+    )

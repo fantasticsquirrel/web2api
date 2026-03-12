@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from web2api import __version__
+from web2api.auth import load_auth_config, public_auth_payload, request_is_authorized
 from web2api.cache import CacheKey, ResponseCache
 from web2api.config import is_valid_param_name
 from web2api.engine import scrape
@@ -171,6 +172,25 @@ def _collect_extra_params(
     return extras or None, None
 
 
+def _validate_declared_endpoint_params(
+    *,
+    recipe: Recipe,
+    endpoint_name: str,
+    extra_params: Mapping[str, Any] | None,
+) -> str | None:
+    endpoint_config = recipe.config.endpoints[endpoint_name]
+    for param_name, param in endpoint_config.params.items():
+        if not param.required:
+            continue
+        value = extra_params.get(param_name) if extra_params is not None else None
+        if value is None or value == "":
+            return (
+                f"missing required query parameter '{param_name}' "
+                f"for endpoint '{endpoint_name}'"
+            )
+    return None
+
+
 def _sanitize_upload_filename(raw_filename: str, *, fallback_index: int) -> str:
     """Return a safe filename stripped of any path components."""
     normalized = raw_filename.replace("\\", "/")
@@ -251,6 +271,20 @@ async def execute_recipe_endpoint(
             code="INVALID_PARAMS",
             message=extra_error,
         )
+    required_param_error = _validate_declared_endpoint_params(
+        recipe=recipe,
+        endpoint_name=endpoint_name,
+        extra_params=extra_params,
+    )
+    if required_param_error is not None:
+        return _build_error_response(
+            recipe=recipe,
+            endpoint=endpoint_name,
+            current_page=page,
+            query=q,
+            code="INVALID_PARAMS",
+            message=required_param_error,
+        )
 
     scrape_func = getattr(app.state, "scrape_func", scrape)
 
@@ -329,6 +363,7 @@ def create_app(
     catalog_source_value = default_catalog_source()
     catalog_ref_value = default_catalog_ref()
     catalog_path_value = default_catalog_path()
+    auth_config = load_auth_config()
     cache_enabled = _env_bool("CACHE_ENABLED", default=True)
     active_response_cache = response_cache
     if active_response_cache is None and cache_enabled:
@@ -350,6 +385,7 @@ def create_app(
         app.state.catalog_source = catalog_source_value
         app.state.catalog_ref = catalog_ref_value
         app.state.catalog_path = catalog_path_value
+        app.state.auth_config = auth_config
         app.state.recipe_admin_lock = asyncio.Lock()
         app.state.scrape_func = scrape
         try:
@@ -380,7 +416,30 @@ def create_app(
             method=request.method,
             path=request.url.path,
         )
+        auth_state = getattr(request.app.state, "auth_config", auth_config)
         try:
+            if auth_state.requires_auth(request.url.path) and not request_is_authorized(
+                request.headers,
+                auth_state,
+            ):
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
+                response = JSONResponse(
+                    status_code=401,
+                    content={
+                        "detail": "Unauthorized. Provide Authorization: Bearer <token>.",
+                    },
+                    headers={"WWW-Authenticate": 'Bearer realm="web2api"'},
+                )
+                response.headers[REQUEST_ID_HEADER] = request_id
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "request.unauthorized",
+                    method=request.method,
+                    path=request.url.path,
+                    response_time_ms=elapsed_ms,
+                )
+                return response
             response = await call_next(request)
         except Exception as exc:  # noqa: BLE001
             elapsed_ms = int((perf_counter() - started_at) * 1000)
@@ -459,7 +518,10 @@ def create_app(
         return TEMPLATES.TemplateResponse(
             request=request,
             name="index.html",
-            context={"sites": sites},
+            context={
+                "sites": sites,
+                "auth": public_auth_payload(getattr(request.app.state, "auth_config", auth_config)),
+            },
         )
 
     @app.get("/{slug}/{endpoint}")

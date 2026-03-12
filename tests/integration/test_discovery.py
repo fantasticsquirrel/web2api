@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from web2api.config import RecipeConfig
+from web2api.recipe_manager import save_manifest
 from web2api.registry import RecipeRegistry
 
 
@@ -167,6 +168,55 @@ def test_discovery_loads_plugin_metadata(tmp_path: Path) -> None:
     assert recipe.plugin.requires_env == ["PLUGIN_SITE_TOKEN"]
     assert recipe.plugin.dependencies.commands == ["bird"]
     assert recipe.plugin.dependencies.python_packages == ["httpx"]
+
+
+def test_discovery_skips_importing_custom_scraper_for_untrusted_recipe(
+    tmp_path: Path,
+) -> None:
+    recipes_dir = tmp_path / "recipes"
+    custom_dir = recipes_dir / "custom"
+    marker = tmp_path / "executed.txt"
+    _write_recipe(custom_dir)
+    (custom_dir / "scraper.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "from web2api.scraper import BaseScraper, ScrapeResult",
+                "",
+                "class Scraper(BaseScraper):",
+                "    def supports(self, endpoint):",
+                '        return endpoint == "read"',
+                "",
+                "    async def scrape(self, endpoint, page, params):",
+                "        return ScrapeResult()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    save_manifest(
+        recipes_dir,
+        {
+            "version": 1,
+            "recipes": {
+                "custom": {
+                    "folder": "custom",
+                    "source_type": "git",
+                    "source": "https://example.com/recipes.git",
+                    "source_ref": "main",
+                    "trusted": False,
+                }
+            },
+        },
+    )
+
+    registry = RecipeRegistry()
+    registry.discover(recipes_dir)
+
+    recipe = registry.get("custom")
+    assert recipe is not None
+    assert recipe.scraper is None
+    assert marker.exists() is False
 
 
 def test_discovery_skips_recipe_with_invalid_plugin(
