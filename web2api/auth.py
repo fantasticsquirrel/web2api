@@ -5,21 +5,25 @@ from __future__ import annotations
 import os
 import secrets
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
 ACCESS_TOKEN_ENV = "WEB2API_ACCESS_TOKEN"
 ACCESS_TOKEN_FILE_ENV = "WEB2API_ACCESS_TOKEN_FILE"
+PUBLIC_PATHS_ENV = "WEB2API_PUBLIC_PATHS"
 AUTH_HEADER = "Authorization"
 ALT_AUTH_HEADER = "X-Web2API-Key"
 AUTH_STORAGE_KEY = "web2api.access_token"
+BASE_PUBLIC_PATHS = ("/", "/health")
 
 
 @dataclass(slots=True)
 class AuthConfig:
-    """Runtime authentication configuration for protected routes."""
+    """Runtime authentication configuration for protected HTTP routes."""
 
     access_token: str | None = None
+    public_path_patterns: tuple[str, ...] = BASE_PUBLIC_PATHS
 
     @property
     def enabled(self) -> bool:
@@ -29,12 +33,48 @@ class AuthConfig:
         """Return ``True`` when *path* is protected by access-token auth."""
         if not self.enabled:
             return False
-        return (
-            path == "/api/recipes/manage"
-            or path.startswith("/api/recipes/manage/")
-            or path == "/mcp"
-            or path.startswith("/mcp/")
+        normalized_path = _normalize_path(path)
+        return not any(
+            _path_matches_pattern(normalized_path, pattern)
+            for pattern in self.public_path_patterns
         )
+
+
+def _normalize_path(path: str) -> str:
+    if path == "":
+        return "/"
+    if path != "/" and path.endswith("/"):
+        return path.rstrip("/") or "/"
+    return path
+
+
+def _normalize_public_path_pattern(pattern: str) -> str:
+    normalized = pattern.strip()
+    if not normalized:
+        return ""
+    if not normalized.startswith("/"):
+        raise ValueError(
+            f"{PUBLIC_PATHS_ENV} entries must start with '/': {pattern!r}"
+        )
+    return _normalize_path(normalized)
+
+
+def _load_public_path_patterns(raw_value: str | None) -> tuple[str, ...]:
+    patterns: list[str] = list(BASE_PUBLIC_PATHS)
+    if raw_value is None:
+        return tuple(patterns)
+
+    for chunk in raw_value.replace("\n", ",").split(","):
+        normalized = _normalize_public_path_pattern(chunk)
+        if normalized and normalized not in patterns:
+            patterns.append(normalized)
+    return tuple(patterns)
+
+
+def _path_matches_pattern(path: str, pattern: str) -> bool:
+    if any(char in pattern for char in "*?[]"):
+        return fnmatchcase(path, pattern)
+    return path == pattern
 
 
 def _read_secret_file(path_value: str) -> str | None:
@@ -48,6 +88,7 @@ def _read_secret_file(path_value: str) -> str | None:
 def load_auth_config() -> AuthConfig:
     """Load auth configuration from environment variables."""
     file_value = os.environ.get(ACCESS_TOKEN_FILE_ENV)
+    public_path_patterns = _load_public_path_patterns(os.environ.get(PUBLIC_PATHS_ENV))
     token_value: str | None = None
     if file_value is not None and file_value.strip():
         token_value = _read_secret_file(file_value.strip())
@@ -55,7 +96,10 @@ def load_auth_config() -> AuthConfig:
         raw_value = os.environ.get(ACCESS_TOKEN_ENV)
         if raw_value is not None:
             token_value = raw_value.strip() or None
-    return AuthConfig(access_token=token_value)
+    return AuthConfig(
+        access_token=token_value,
+        public_path_patterns=public_path_patterns,
+    )
 
 
 def _extract_bearer_token(header_value: str | None) -> str | None:
@@ -93,7 +137,8 @@ def public_auth_payload(config: AuthConfig) -> dict[str, Any]:
         "alternate_header": ALT_AUTH_HEADER,
         "storage_key": AUTH_STORAGE_KEY,
         "protected_surfaces": [
-            "/api/recipes/manage*",
-            "/mcp*",
+            "all routes except configured public path patterns",
         ],
+        "public_surfaces": list(config.public_path_patterns),
+        "public_paths_env": PUBLIC_PATHS_ENV,
     }

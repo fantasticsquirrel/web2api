@@ -108,35 +108,50 @@ docker compose exec web2api web2api recipes catalog add hackernews --yes
 
 ## Access Token
 
-Web2API can protect the sensitive management and MCP surfaces with a shared access token.
+Web2API can protect all HTTP routes except selected public paths with a shared access token.
 
 Set one of:
 - `WEB2API_ACCESS_TOKEN`
 - `WEB2API_ACCESS_TOKEN_FILE` (path to a file containing the token)
 
-When configured, Web2API requires the token for:
-- `/api/recipes/manage*`
-- `/mcp*`
+By default, when configured, Web2API requires the token for everything except:
+- `/`
+- `/health`
+
+You can keep extra routes public while token auth stays enabled by setting
+`WEB2API_PUBLIC_PATHS` to a comma- or newline-separated list of exact paths or shell-style
+glob patterns matched against the request path.
+
+Common examples:
+- `/api/sites`
+- `/docs`
+- `/openapi.json`
+- `/allenai/*`
+- `/*/chat`
+
+Any path that matches one of those patterns skips token auth, so use this allowlist sparingly.
 
 Send the token as either:
 - `Authorization: Bearer <token>`
 - `X-Web2API-Key: <token>`
 
-Public scrape/discovery routes remain open:
-- `/`
-- `/health`
-- `/api/sites`
-- `/{slug}/{endpoint}`
-
-Examples:
+Example mixed setup:
 
 ```bash
+export WEB2API_ACCESS_TOKEN="secret-token"
+export WEB2API_PUBLIC_PATHS="/api/sites,/allenai/*,/docs,/openapi.json"
+```
+
+Authenticated request examples:
+
+```bash
+curl -H "Authorization: Bearer $WEB2API_ACCESS_TOKEN" http://localhost:8010/allenai/chat?q=example&page=1
 curl -H "Authorization: Bearer $WEB2API_ACCESS_TOKEN" http://localhost:8010/api/recipes/manage
 curl -H "Authorization: Bearer $WEB2API_ACCESS_TOKEN" http://localhost:8010/mcp/tools
 ```
 
 When token auth is enabled, the built-in web UI shows an access-token input and stores the token in
-browser local storage for repository/MCP actions.
+browser local storage for protected browser actions.
 
 ## CLI
 
@@ -387,15 +402,15 @@ A simpler HTTP-based tool bridge is also available for non-MCP clients:
 
 | Endpoint | Description |
 |---|---|
-| `GET /` | HTML index listing all recipes and endpoints |
-| `GET /health` | Service, browser pool, and cache health |
-| `GET /api/sites` | JSON list of all recipes with endpoint metadata |
-| `GET /api/recipes/manage` | JSON catalog + installed recipe state for UI/automation (protected when token auth is enabled) |
-| `POST /api/recipes/manage/install/{name}` | Install recipe by catalog entry name (protected when token auth is enabled) |
-| `POST /api/recipes/manage/update/{slug}` | Update installed managed recipe (protected when token auth is enabled) |
-| `POST /api/recipes/manage/uninstall/{slug}` | Uninstall recipe (add `?force=true` for unmanaged local recipes, protected when token auth is enabled) |
-| `POST /api/recipes/manage/enable/{slug}` | Enable installed recipe (protected when token auth is enabled) |
-| `POST /api/recipes/manage/disable/{slug}` | Disable installed recipe (protected when token auth is enabled) |
+| `GET /` | HTML index listing all recipes and endpoints (always public) |
+| `GET /health` | Service, browser pool, and cache health (always public) |
+| `GET /api/sites` | JSON list of all recipes with endpoint metadata (protected by default when token auth is enabled) |
+| `GET /api/recipes/manage` | JSON catalog + installed recipe state for UI/automation (protected by default when token auth is enabled) |
+| `POST /api/recipes/manage/install/{name}` | Install recipe by catalog entry name (protected by default when token auth is enabled) |
+| `POST /api/recipes/manage/update/{slug}` | Update installed managed recipe (protected by default when token auth is enabled) |
+| `POST /api/recipes/manage/uninstall/{slug}` | Uninstall recipe (add `?force=true` for unmanaged local recipes, protected by default when token auth is enabled) |
+| `POST /api/recipes/manage/enable/{slug}` | Enable installed recipe (protected by default when token auth is enabled) |
+| `POST /api/recipes/manage/disable/{slug}` | Disable installed recipe (protected by default when token auth is enabled) |
 
 `GET /api/recipes/manage` includes:
 - `catalog`: entries from the current catalog source
@@ -405,6 +420,7 @@ A simpler HTTP-based tool bridge is also available for non-MCP clients:
 ### Recipe Endpoints
 
 All recipe endpoints follow the pattern: `GET /{slug}/{endpoint}?page=1&q=...`
+and require the access token by default when token auth is enabled.
 
 - `page` — pagination (default: 1)
 - `q` — query text (required when `requires_query: true`)
@@ -644,8 +660,9 @@ Environment variables (with defaults):
 | `WEB2API_RECIPE_CATALOG_REF` | empty | Optional git ref for catalog source |
 | `WEB2API_RECIPE_CATALOG_PATH` | `catalog.yaml` | Catalog file path inside catalog source |
 | `PLUGIN_ENFORCE_COMPATIBILITY` | false | Skip plugin recipes outside declared `web2api` version bounds |
-| `WEB2API_ACCESS_TOKEN` | empty | Shared access token for admin API and MCP endpoints |
+| `WEB2API_ACCESS_TOKEN` | empty | Shared access token for all routes except public paths |
 | `WEB2API_ACCESS_TOKEN_FILE` | empty | Path to file containing the access token (alternative to `WEB2API_ACCESS_TOKEN`) |
+| `WEB2API_PUBLIC_PATHS` | empty | Extra public path patterns to allow without auth while token auth is enabled |
 | `BIRD_AUTH_TOKEN` | empty | X/Twitter auth token for `x` recipe |
 | `BIRD_CT0` | empty | X/Twitter ct0 token for `x` recipe |
 

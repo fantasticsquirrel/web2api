@@ -397,7 +397,7 @@ async def test_endpoint_requires_declared_required_extra_params(
 
 
 @pytest.mark.asyncio
-async def test_access_token_protects_admin_and_mcp_surfaces(
+async def test_access_token_protects_all_routes_except_public_surfaces(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -427,10 +427,10 @@ async def test_access_token_protects_admin_and_mcp_surfaces(
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             public_resp = await client.get("/alpha/read")
-            assert public_resp.status_code == 200
+            assert public_resp.status_code == 401
 
             sites_resp = await client.get("/api/sites")
-            assert sites_resp.status_code == 200
+            assert sites_resp.status_code == 401
 
             health_resp = await client.get("/health")
             assert health_resp.status_code == 200
@@ -438,6 +438,7 @@ async def test_access_token_protects_admin_and_mcp_surfaces(
             index_resp = await client.get("/")
             assert index_resp.status_code == 200
             assert "Paste access token" in index_resp.text
+            assert "public paths shown below" in index_resp.text
 
             manage_resp = await client.get("/api/recipes/manage")
             assert manage_resp.status_code == 401
@@ -469,6 +470,76 @@ async def test_access_token_protects_admin_and_mcp_surfaces(
                 headers={"Authorization": "Bearer secret-token"},
             )
             assert authorized_mcp.status_code == 200
+
+            authorized_sites = await client.get(
+                "/api/sites",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+            assert authorized_sites.status_code == 200
+
+            authorized_recipe = await client.get(
+                "/alpha/read",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+            assert authorized_recipe.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_access_token_allows_configured_public_path_patterns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recipes_dir = tmp_path / "recipes"
+    _write_recipe(recipes_dir, "alpha")
+    _write_recipe(recipes_dir, "beta")
+
+    async def fake_scrape(
+        *,
+        pool: FakePool,
+        recipe,
+        endpoint: str,
+        page: int = 1,
+        query: str | None = None,
+        extra_params: dict[str, str] | None = None,
+        scrape_timeout: float = 30.0,
+    ) -> ApiResponse:
+        _ = pool, endpoint, query, extra_params, scrape_timeout
+        return _success_response(slug=recipe.config.slug, endpoint="read", page=page)
+
+    monkeypatch.setattr("web2api.main.scrape", fake_scrape)
+    monkeypatch.setenv("WEB2API_ACCESS_TOKEN", "secret-token")
+    monkeypatch.setenv("WEB2API_PUBLIC_PATHS", "/api/sites,/alpha/*")
+
+    fake_pool = FakePool()
+    app = create_app(recipes_dir=recipes_dir, pool=fake_pool)
+
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+            index_resp = await client.get("/")
+            assert index_resp.status_code == 200
+            assert "/alpha/*" in index_resp.text
+
+            health_resp = await client.get("/health")
+            assert health_resp.status_code == 200
+
+            sites_resp = await client.get("/api/sites")
+            assert sites_resp.status_code == 200
+
+            alpha_resp = await client.get("/alpha/read")
+            assert alpha_resp.status_code == 200
+
+            beta_resp = await client.get("/beta/read")
+            assert beta_resp.status_code == 401
+
+            manage_resp = await client.get("/api/recipes/manage")
+            assert manage_resp.status_code == 401
+
+            authorized_beta = await client.get(
+                "/beta/read",
+                headers={"Authorization": "Bearer secret-token"},
+            )
+            assert authorized_beta.status_code == 200
 
 
 @pytest.mark.asyncio

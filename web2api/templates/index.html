@@ -691,8 +691,7 @@
             <div>
               <span class="manager-name">Protected Surfaces</span>
               <p class="manager-meta">
-                This server requires an access token for the recipe repository and MCP routes.
-                Public scrape endpoints remain available without a token.
+                This server requires an access token for every route except the public paths shown below.
               </p>
             </div>
           </div>
@@ -716,6 +715,13 @@
             Send <code>{{ auth.header }}: {{ auth.scheme }} &lt;token&gt;</code> or
             <code>{{ auth.alternate_header }}: &lt;token&gt;</code> for
             {{ auth.protected_surfaces|join(", ") }}.
+            Public path patterns:
+            {% if auth.public_surfaces %}
+            {{ auth.public_surfaces|join(", ") }}
+            {% else %}
+            none
+            {% endif %}.
+            Configure extras with <code>{{ auth.public_paths_env }}</code>.
           </p>
           <p class="manager-status" id="authStatus"></p>
         </section>
@@ -1134,7 +1140,7 @@
           if (token) {
             return true;
           }
-          const message = "Access token required. Enter it above to use repository and MCP features.";
+          const message = "Access token required. Enter it above to use protected routes.";
           if (typeof setScopeStatus === "function") {
             setScopeStatus(message, { error: true });
           }
@@ -1153,7 +1159,7 @@
           authTokenInput.value = getStoredToken();
         }
         if (authConfig.enabled && !getStoredToken().trim()) {
-          setAuthStatus("Access token required for repository and MCP features.");
+          setAuthStatus("Access token required for protected routes.");
         }
 
         const readError = async (response) => {
@@ -1771,7 +1777,7 @@
             }
             setAuthDot("", "No token");
             clearProtectedViews();
-            setStatus("Access token cleared. Repository access is disabled until you enter it again.", {
+            setStatus("Access token cleared. Protected routes are disabled until you enter it again.", {
               error: true,
             });
             setMcpStatus("Access token cleared. Enter it above to load MCP tools.", {
