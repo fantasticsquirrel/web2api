@@ -126,6 +126,72 @@
         margin-top: 0.5rem;
       }
 
+      .auth-input-wrap {
+        flex: 1 1 320px;
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      .auth-input-wrap .filter {
+        width: 100%;
+        padding-right: 2.6rem;
+      }
+
+      .auth-toggle {
+        position: absolute;
+        right: 0.55rem;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--ink-dim);
+        font-size: 1.1rem;
+        padding: 0.2rem;
+        line-height: 1;
+        opacity: 0.6;
+        transition: opacity 150ms;
+      }
+
+      .auth-toggle:hover {
+        opacity: 1;
+      }
+
+      .auth-status-dot {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        font-size: 0.82rem;
+        color: var(--ink-dim);
+      }
+
+      .auth-status-dot::before {
+        content: "";
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #94a3b8;
+        flex-shrink: 0;
+      }
+
+      .auth-status-dot.is-valid::before {
+        background: #22c55e;
+      }
+
+      .auth-status-dot.is-invalid::before {
+        background: #ef4444;
+      }
+
+      .auth-status-dot.is-checking::before {
+        background: #f59e0b;
+        animation: pulse-dot 1s ease infinite;
+      }
+
+      @keyframes pulse-dot {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+
       .view-tabs {
         margin-top: 0.9rem;
         display: inline-flex;
@@ -630,16 +696,20 @@
             </div>
           </div>
           <div class="auth-row">
-            <input
-              class="filter auth-input"
-              id="authTokenInput"
-              type="password"
-              placeholder="Paste access token"
-              autocomplete="current-password"
-              spellcheck="false"
-            />
+            <div class="auth-input-wrap">
+              <input
+                class="filter"
+                id="authTokenInput"
+                type="password"
+                placeholder="Paste access token"
+                autocomplete="current-password"
+                spellcheck="false"
+              />
+              <button class="auth-toggle" id="authToggleVis" type="button" title="Show/hide token">👁</button>
+            </div>
             <button class="manager-btn" id="authSave" type="button">Save</button>
             <button class="manager-btn" id="authClear" type="button">Clear</button>
+            <span class="auth-status-dot" id="authDot"></span>
           </div>
           <p class="manager-meta auth-meta">
             Send <code>{{ auth.header }}: {{ auth.scheme }} &lt;token&gt;</code> or
@@ -1614,8 +1684,63 @@
           mcpReload.addEventListener("click", () => void loadMcpTools());
         }
 
+        // Show/hide token toggle
+        const authToggle = document.getElementById("authToggleVis");
+        if (authToggle && authTokenInput) {
+          authToggle.addEventListener("click", () => {
+            const isPassword = authTokenInput.type === "password";
+            authTokenInput.type = isPassword ? "text" : "password";
+            authToggle.textContent = isPassword ? "🙈" : "👁";
+            authToggle.title = isPassword ? "Hide token" : "Show token";
+          });
+        }
+
+        // Auth status dot
+        const authDot = document.getElementById("authDot");
+        function setAuthDot(state, label) {
+          if (!authDot) return;
+          authDot.className = "auth-status-dot";
+          if (state) authDot.classList.add(state);
+          authDot.textContent = label || "";
+        }
+
+        async function verifyToken() {
+          const token = getStoredToken().trim();
+          if (!token) {
+            setAuthDot("", "No token");
+            return;
+          }
+          setAuthDot("is-checking", "Verifying…");
+          try {
+            const resp = await fetch("/api/recipes/manage", {
+              headers: { "Authorization": "Bearer " + token },
+            });
+            if (resp.ok) {
+              setAuthDot("is-valid", "Token valid");
+            } else if (resp.status === 401 || resp.status === 403) {
+              setAuthDot("is-invalid", "Token rejected");
+            } else {
+              setAuthDot("is-invalid", "Error " + resp.status);
+            }
+          } catch {
+            setAuthDot("is-invalid", "Connection error");
+          }
+        }
+
+        // Verify on page load if token exists
+        if (getStoredToken().trim()) {
+          void verifyToken();
+        } else {
+          setAuthDot("", "No token");
+        }
+
+        // Pre-fill input hint if token is stored
+        if (authTokenInput && getStoredToken().trim()) {
+          authTokenInput.placeholder = "••••••••  (token saved — enter new to replace)";
+        }
+
         if (authSave) {
-          authSave.addEventListener("click", () => {
+          authSave.addEventListener("click", async () => {
             if (!authTokenInput) {
               return;
             }
@@ -1625,7 +1750,10 @@
               return;
             }
             storeToken(value);
+            authTokenInput.value = "";
+            authTokenInput.placeholder = "••••••••  (token saved — enter new to replace)";
             setAuthStatus("Access token saved in this browser.");
+            await verifyToken();
             void loadCatalog();
             if (mcpLoaded) {
               void loadMcpTools();
@@ -1638,7 +1766,9 @@
             clearStoredToken();
             if (authTokenInput) {
               authTokenInput.value = "";
+              authTokenInput.placeholder = "Paste access token";
             }
+            setAuthDot("", "No token");
             clearProtectedViews();
             setStatus("Access token cleared. Repository access is disabled until you enter it again.", {
               error: true,
