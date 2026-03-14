@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-TOOL_NAME_SEP = "__"
+TOOL_NAME_SEP = "_"
 
 
 def build_tool_name(slug: str, endpoint: str, override: str | None = None) -> str:
     """Build a tool name from recipe slug and endpoint name.
 
     If *override* is given (from endpoint ``tool_name`` config), use that
-    instead of the default ``{slug}__{endpoint}`` convention.
+    instead of the default ``{slug}_{endpoint}`` convention.
     """
     if override:
         return override

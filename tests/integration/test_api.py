@@ -792,7 +792,7 @@ async def test_mcp_bridge_preserves_special_characters_in_params(
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.post(
-                "/mcp/tools/alpha__search",
+                "/mcp/tools/alpha_search",
                 json={
                     "q": "cats & dogs",
                     "tools_url": "http://localhost:8100/mcp/tools?x=1&y=2",

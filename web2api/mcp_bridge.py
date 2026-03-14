@@ -26,7 +26,7 @@ def _resolve_tool(registry: RecipeRegistry, tool_name: str) -> tuple[str | None,
     """Resolve a tool name to (slug, endpoint_name).
 
     Checks custom ``tool_name`` overrides first, then falls back to the
-    standard ``{slug}__{endpoint}`` naming convention.
+    standard ``{slug}_{endpoint}`` naming convention.
     """
     # Check custom tool_name overrides
     for recipe in registry.list_all():

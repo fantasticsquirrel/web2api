@@ -368,7 +368,7 @@ Transport: Streamable HTTP
 ### How It Works
 
 - Each recipe endpoint registers as a separate MCP tool  
-  (e.g. `brave-search__search`, `deepl__de-en`, `allenai__olmo-32b`)
+  (e.g. `brave-search_search`, `deepl_de-en`, `allenai_olmo-32b`)
 - Tools include proper descriptions and typed parameter schemas
 - When recipes are installed/uninstalled via the admin API, tools rebuild automatically
 - Optional access-token protection is available via `WEB2API_ACCESS_TOKEN`
@@ -379,9 +379,9 @@ After installing the `brave-search` and `deepl` recipes:
 
 | Tool | Description | Parameters |
 |---|---|---|
-| `brave-search__search` | Web search via Brave | `q` (required) |
-| `deepl__de-en` | Translate German → English | `q` (required) |
-| `deepl__en-de` | Translate English → German | `q` (required) |
+| `brave-search_search` | Web search via Brave | `q` (required) |
+| `deepl_de-en` | Translate German → English | `q` (required) |
+| `deepl_en-de` | Translate English → German | `q` (required) |
 
 ### HTTP Bridge (Legacy)
 
